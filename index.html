@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v=4">
 </head>
 
 <body>
@@ -121,6 +121,20 @@
 
                 <button id="discoverButton" type="button" class="discover-run-btn">Descobrir Canais</button>
                 <p class="quota-hint">⚠️ Cada execução consome quota da API do YouTube (busca + estatísticas). Prefira poucas categorias por execução.</p>
+
+                <div class="api-key-section">
+                    <label class="section-label">Chave da API do YouTube</label>
+                    <div class="api-key-row">
+                        <input type="password" id="apiKeyInput" placeholder="AIza..." autocomplete="off">
+                        <button type="button" id="apiKeySave" class="mini-btn">Salvar</button>
+                        <button type="button" id="apiKeyToggle" class="mini-btn">Mostrar</button>
+                        <button type="button" id="apiKeyTest" class="mini-btn">Testar</button>
+                    </div>
+                    <div id="apiKeyStatus" class="api-key-status"></div>
+                    <div style="margin-top: 0.5rem;">
+                        <button type="button" id="clearCacheBtn" class="mini-btn">Limpar cache de buscas</button>
+                    </div>
+                </div>
             </div>
             <div id="discoverContainer" class="results-grid"></div>
         </div>
@@ -148,10 +162,10 @@
         </div>
     </div>
 
-    <script src="/config.js"></script>
-    <script src="script.js"></script>
-    <script src="discover.js"></script>
-    <script src="dashboard.js"></script>
+    <script src="/config.js?v=4"></script>
+    <script src="script.js?v=4"></script>
+    <script src="discover.js?v=4"></script>
+    <script src="dashboard.js?v=4"></script>
 </body>
 
 </html>

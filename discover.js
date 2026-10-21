@@ -195,6 +195,70 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     updateCounter();
 
+    // ===== API Key manager =====
+    const apiKeyInput = document.getElementById('apiKeyInput');
+    const apiKeyStatus = document.getElementById('apiKeyStatus');
+    const apiKeyToggle = document.getElementById('apiKeyToggle');
+
+    function setKeyStatus(msg, cls) {
+        if (!apiKeyStatus) return;
+        apiKeyStatus.textContent = msg;
+        apiKeyStatus.className = 'api-key-status ' + (cls || '');
+    }
+
+    function refreshKeyField() {
+        const k = localStorage.getItem('yt_api_key');
+        apiKeyInput.value = k || '';
+        setKeyStatus(k ? 'Chave salva no navegador (' + k.slice(0, 10) + '…)' : 'Nenhuma chave salva. Cole sua API key aqui.', '');
+    }
+
+    if (apiKeyInput) {
+        refreshKeyField();
+
+        const clearCacheBtn = document.getElementById('clearCacheBtn');
+        if (clearCacheBtn) clearCacheBtn.addEventListener('click', () => {
+            const keys = Object.keys(localStorage).filter(k => k.startsWith('yt_cache:'));
+            keys.forEach(k => localStorage.removeItem(k));
+            setKeyStatus(`Cache limpo (${keys.length} entradas removidas). Próxima busca usará a API.`, 'ok');
+        });
+
+        document.getElementById('apiKeySave').addEventListener('click', () => {
+            const k = apiKeyInput.value.trim();
+            if (!k) {
+                setKeyStatus('Cole uma chave antes de salvar.', 'err');
+                return;
+            }
+            localStorage.setItem('yt_api_key', k);
+            setKeyStatus('Chave salva!', 'ok');
+        });
+
+        apiKeyToggle.addEventListener('click', () => {
+            const isPw = apiKeyInput.type === 'password';
+            apiKeyInput.type = isPw ? 'text' : 'password';
+            apiKeyToggle.textContent = isPw ? 'Ocultar' : 'Mostrar';
+        });
+
+        document.getElementById('apiKeyTest').addEventListener('click', async () => {
+            const k = (apiKeyInput.value.trim() || localStorage.getItem('yt_api_key') || '').trim();
+            if (!k) { setKeyStatus('Nenhuma chave para testar.', 'err'); return; }
+            setKeyStatus('Testando chave…', '');
+            try {
+                const res = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&q=test&maxResults=1&key=${k}`);
+                const data = await res.json();
+                if (res.ok) {
+                    localStorage.setItem('yt_api_key', k);
+                    setKeyStatus('✓ Chave válida e salva.', 'ok');
+                } else if (res.status === 429) {
+                    setKeyStatus('Chave correta, mas quota do dia esgotada (reseta à meia-noite PT).', 'err');
+                } else {
+                    setKeyStatus('✗ ' + (data.error ? data.error.message : 'Erro desconhecido'), 'err');
+                }
+            } catch (e) {
+                setKeyStatus('✗ Falha de rede ao testar: ' + e.message, 'err');
+            }
+        });
+    }
+
     discoverBtn.addEventListener('click', runDiscovery);
 
     // Language selector
@@ -231,16 +295,25 @@ document.addEventListener('DOMContentLoaded', () => {
         discoverContainer.innerHTML = '<div class="empty-state"><p>Escaneando o YouTube em busca de canais que atendem aos seus critérios...</p></div>';
 
         const found = new Map(); // channelId -> { channel, category, score }
+        let cacheHits = 0, cacheMisses = 0;
 
         try {
             // 1. Category seed searches (seeds in the selected language).
             // Seeds are shuffled per run so results vary between executions.
+            // Results are cached in localStorage for 24h to save quota.
             const shuffled = arr => [...arr].sort(() => Math.random() - 0.5);
             for (const category of selectedCategories) {
                 const cat = CATEGORY_SEEDS[category];
                 const seeds = shuffled(cat[DISCOVER_LANG]).slice(0, 2); // limit quota usage
                 for (const seed of seeds) {
-                    const items = await ytSearchChannels(apiKey, seed);
+                    let items = cacheGet('search', seed + '|' + DISCOVER_LANG);
+                    if (items) {
+                        cacheHits++;
+                    } else {
+                        cacheMisses++;
+                        items = await ytSearchChannels(apiKey, seed);
+                        cacheSet('search', seed + '|' + DISCOVER_LANG, items);
+                    }
                     for (const item of items) {
                         if (!found.has(item.id.channelId)) {
                             found.set(item.id.channelId, { channel: item, category });
@@ -249,10 +322,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
-            // 2. Trending scan
+            // 2. Trending scan (also cached, 1h)
             if (useTrending.checked) {
                 const region = trendingRegion.value || 'US';
-                const items = await ytTrendingChannels(apiKey, region);
+                let items = cacheGet('trending', region, 3600);
+                if (items) {
+                    cacheHits++;
+                } else {
+                    cacheMisses++;
+                    items = await ytTrendingChannels(apiKey, region);
+                    cacheSet('trending', region, items, 3600);
+                }
                 for (const item of items) {
                     if (!found.has(item.channelId)) {
                         found.set(item.channelId, { channel: {
@@ -263,14 +343,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
-            // 3. Fetch stats for all candidate channels
+            // 3. Fetch stats for all candidate channels (cached per channel id, 1h freshness)
             const ids = [...found.keys()];
             if (ids.length === 0) {
                 showEmpty('Nenhum canal candidato encontrado. Tente outras categorias ou habilite o escaneamento de vídeos em alta.');
                 return;
             }
 
-            const statsList = await ytChannelStats(apiKey, ids);
+            const statsList = await ytChannelStatsCached(apiKey, ids);
             const statsById = new Map(statsList.map(s => [s.id, s.statistics]));
 
             // 4. Apply filters + score
@@ -297,6 +377,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
             renderGrouped(results);
 
+            if (cacheMisses === 0) {
+                showCacheNote('⚡ 100% dos dados vieram do cache local — nenhuma unidade de quota consumida.');
+            } else {
+                showCacheNote(`⚡ ${cacheHits} buscas do cache local, ${cacheMisses} novas na API (${cacheMisses * 100} unidades de quota usadas).`);
+            }
+
         } catch (err) {
             console.error('Discovery error:', err);
             showEmpty('Erro durante a descoberta: ' + err.message);
@@ -307,6 +393,38 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --- YouTube API helpers ---
+
+    // localStorage cache for API responses (saves quota)
+    // TTL default 24h (86400s). Keys are namespaced: yt_cache:type:langOrRegion:id
+    function cacheSet(type, key, data, ttlSeconds) {
+        try {
+            const entry = { t: Date.now(), ttl: (ttlSeconds || 86400) * 1000, d: data };
+            localStorage.setItem(`yt_cache:${type}:${key}`, JSON.stringify(entry));
+        } catch (e) { /* storage full — ignore */ }
+    }
+
+    function cacheGet(type, key, ttlSeconds) {
+        try {
+            const raw = localStorage.getItem(`yt_cache:${type}:${key}`);
+            if (!raw) return null;
+            const entry = JSON.parse(raw);
+            const ttl = (ttlSeconds !== undefined ? ttlSeconds * 1000 : entry.ttl);
+            if (Date.now() - entry.t > ttl) {
+                localStorage.removeItem(`yt_cache:${type}:${key}`);
+                return null;
+            }
+            return entry.d;
+        } catch (e) { return null; }
+    }
+
+    function showCacheNote(msg) {
+        const note = document.createElement('p');
+        note.className = 'quota-hint';
+        note.style.textAlign = 'left';
+        note.style.marginBottom = '1rem';
+        note.textContent = msg;
+        discoverContainer.prepend(note);
+    }
 
     async function ytFetch(url) {
         const res = await fetch(url);
@@ -353,6 +471,32 @@ document.addEventListener('DOMContentLoaded', () => {
             items.push(...(data.items || []));
         }
         return items;
+    }
+
+    // Cached variant: per-channel stats stored in localStorage for 1h,
+    // only uncached channels are requested from the API.
+    async function ytChannelStatsCached(apiKey, ids) {
+        const need = [];
+        const cached = [];
+        for (const id of ids) {
+            const c = cacheGet('stats', id, 3600);
+            if (c) cached.push(c); else need.push(id);
+        }
+        const fresh = need.length > 0 ? await ytChannelStats(apiKey, need) : [];
+        for (const item of fresh) {
+            cacheSet('stats', item.id, item, 3600);
+        }
+        const freshById = new Map(fresh.map(s => [s.id, s]));
+        // Rehydrate cached entries into full channel objects
+        const cachedItems = cached.map(c => {
+            const parts = [];
+            // cached items are full channel objects from the API
+            return c;
+        });
+        // Fresh entries must win (they were just fetched)
+        const merged = [...cachedItems.filter(c => !freshById.has(c.id)), ...fresh];
+        cacheHits += cached.length; cacheMisses += need.length > 0 ? 1 : 0;
+        return merged;
     }
 
     // --- Enrichment / Filtering / Scoring ---
